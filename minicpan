@@ -1,0 +1,70 @@
+#!/bin/bash
+
+# Dumbass minicpan replacement - Matt S Trout 2005/6. Perl license.
+# futzed by Yuval Kogman
+
+# Pick one from http://cpan.org/SITES.html#RSYNC
+
+REMOTEHOST='rsync.nic.funet.fi'
+REMOTEPREFIX='CPAN'
+
+
+LOCAL='/Users/nothingmuch/Perl/CPAN'
+
+cd $LOCAL
+
+mkdir -p work authors/id modules
+
+echo -n "updating indexes..."
+
+rsync -b --suffix=.old -a -q $REMOTEHOST::"$REMOTEPREFIX/modules/03modlist.data.gz $REMOTEPREFIX/modules/02packages.details.txt.gz" modules/ || exit
+echo " done"
+
+if [ ! -f modules/02packages.details.txt.gz.old ]; then
+	echo "no changes"
+	exit
+fi
+
+rm modules/02packages.details.txt.gz.old
+
+echo -n "analyzing files..."
+
+cpandb --CPAN "$LOCAL" --update 2>/dev/null & 
+
+gzcat modules/02packages.details.txt.gz | egrep '\.(tar\.gz|tgz|zip)$' | egrep -v '/((perl-|parrot-|ponie-)[0-9]|perl5\.004)' | awk '{print $3}' | sort -u >work/targets.dists
+
+echo " done"
+
+echo -n "syncing and deleting files..."
+
+(
+	cat work/targets.dists | perl -pe 's!/[^/]+$!\n!;' | uniq >work/targets.dirs
+
+	cd $LOCAL/authors/id
+
+	cat $LOCAL/work/targets.dirs | xargs -n200 mkdir -p &
+
+	cd $LOCAL
+
+	find authors/id -name '*.*' | perl -pe 's!^authors/id/!!;' | sort -u >work/tree.dists &
+
+	wait
+	
+	nice comm -13 work/targets.dists work/tree.dists | perl -pe 's!^!authors/id/!;' | xargs rm &
+
+	# these files never change
+	comm -23 work/targets.dists work/tree.dists | rsync -q --files-from=- --size-only --ignore-existing $REMOTEHOST::"$REMOTEPREFIX/authors/id/" authors/id/
+
+) &
+
+nice cat work/targets.dists | cut -d'/' -f1-3 | uniq | perl -pe 's!$!/CHECKSUMS!;' >work/targets.checksums
+
+wait # make sure there aren't two rsyncs at the same time
+
+# these do
+rsync -az -q --files-from=work/targets.checksums $REMOTEHOST::"$REMOTEPREFIX/authors/id/" authors/id/
+
+wait
+
+echo " done";
+
